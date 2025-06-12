@@ -6,7 +6,7 @@ import soundBreak from "./ding-break.mp3";
 
 // --- GOOGLE APP SCRIPT WEB APP URL ---
 const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbxo5WFvIso1_7WbUREeQUGhueeb1GGCA84DpiJ75OT9JjUrl-1YkVdqYSmDME52j4g4/exec"; // <-- replace XXXX with your script ID
-
+console.log(SYNC_API_URL);
 const COLORS = {
   bg: "#161925",
   surface: "#23263a",
@@ -59,7 +59,7 @@ async function fetchSync(key) {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) return null;
   const txt = await res.text();
-  console.log(txt);
+  console.log('fetch: '+txt);
   try {
 
     return JSON.parse(txt);
@@ -230,29 +230,30 @@ function App() {
   useEffect(() => {
     (async () => {
       // Only sync if local is empty
-      if (!localStorage.getItem("pomo-durations")) {
+      //if (!localStorage.getItem("pomo-durations")) {
         const durationsRemote = await fetchSync("pomo-durations");
         if (durationsRemote && typeof durationsRemote === "object") {
           setDurations(durationsRemote);
           localStorage.setItem("pomo-durations", JSON.stringify(durationsRemote));
         }
-      }
-      if (!localStorage.getItem("pomo-history")) {
+      
+      //if (!localStorage.getItem("pomo-history")) {
         const historyRemote = await fetchSync("pomo-history");
         if (historyRemote && typeof historyRemote === "object") {
           setHistory(historyRemote);
           localStorage.setItem("pomo-history", JSON.stringify(historyRemote));
         }
-      }
+      
     })();
   }, []);
 
   // Whenever durations/history changes, update remote copy and localStorage
   useEffect(() => {
+    console.log('putting'+JSON.stringify(durations))
     putSync("pomo-durations", durations);
   }, [durations]);
   useEffect(() => {
-    console.log(history);
+    console.log('putting'+JSON.stringify(history))
     putSync("pomo-history", history);
   }, [history]);
 
