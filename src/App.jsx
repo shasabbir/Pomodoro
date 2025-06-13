@@ -143,11 +143,22 @@ function App() {
   }
 
   useEffect(() => {
-    try {
-      const newDur = JSON.parse(localStorage.getItem("pomo-durations"));
-      if (newDur && typeof newDur === "object") setDurations(newDur);
-    } catch {}
-  }, []);
+  try {
+    const storedDur = JSON.parse(localStorage.getItem("pomo-durations"));
+    if (storedDur && typeof storedDur === "object") {
+      setDurations(storedDur);
+      setTimeLeft(storedDur[mode] || DEFAULT_DURATIONS[mode]);
+    }
+
+    const storedHist = JSON.parse(localStorage.getItem("pomo-history"));
+    if (storedHist && typeof storedHist === "object") {
+      setHistory(storedHist);
+    }
+  } catch (e) {
+    console.error("Failed to load from localStorage:", e);
+  }
+}, []);
+
 
   const [timerWidth, setTimerWidth] = useState(230);
   const timerRefDiv = useRef();
