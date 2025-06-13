@@ -9,10 +9,18 @@ const DEFAULT_LEVELS = [
   { min: 121, max: 10000, color: "#086cb7" } // 2:01+
 ];
 
+// Timezone helpers (+06, e.g. Dhaka)
+function getTodayDhaka() {
+  const now = new Date();
+  const tzOffset = 6 * 60 * 60 * 1000;
+  const nowDhaka = new Date(now.getTime() + tzOffset);
+  return nowDhaka.toISOString().slice(0, 10);
+}
+
 function getLast6MonthsGrid(history) {
   const grid = [];
-  const today = new Date();
-  let d = new Date(today); // Start from today
+  // Use today's date in +06
+  let d = new Date(getTodayDhaka());
   for (let i = 0; i < 7 * 26; ++i) {
     const dateStr = d.toISOString().slice(0, 10);
     grid.unshift({
@@ -21,8 +29,7 @@ function getLast6MonthsGrid(history) {
     });
     d.setDate(d.getDate() - 1);
   }
-  // LEFT: recent, RIGHT: oldest
-  // So reverse the array of weeks to put most recent week at left
+  // Reverse the weeks so the most recent is leftmost
   const weeks = Array.from({ length: 26 }, (_, i) =>
     grid.slice(i * 7, i * 7 + 7)
   ).reverse();
@@ -52,6 +59,7 @@ const ContributionMap = ({ history, premiumColors }) => {
     { min: 121, max: 10000, color: "#086cb7" }
   ] : DEFAULT_LEVELS;
   const grid = useMemo(() => getLast6MonthsGrid(history), [history]);
+  // Show time zone in legend
   return (
     <div>
       <div style={{
@@ -95,7 +103,7 @@ const ContributionMap = ({ history, premiumColors }) => {
         gap: 8,
         flexWrap: "wrap"
       }}>
-        <span style={{ marginRight: 8 }}>Legend:</span>
+        <span style={{ marginRight: 8 }}>Legend (Time: <b>UTC+06</b>):</span>
         <span style={{
           background: "#252c3d",
           color: "#a7b2cc",
@@ -135,6 +143,14 @@ const ContributionMap = ({ history, premiumColors }) => {
           marginLeft: 4,
           fontWeight: 700
         }}>4:00+</span>
+      </div>
+      <div style={{
+        fontSize: 12,
+        color: "#a7b2cc",
+        marginTop: 2,
+        marginLeft: 2,
+      }}>
+        Recent days at <b>left</b>, oldest at right. Last cell is always today (<b>{getTodayDhaka()}</b>, +06).
       </div>
     </div>
   );

@@ -1,12 +1,10 @@
+// Removed all references to the deprecated sync API.
 import React, { useState, useRef, useEffect } from "react";
 import ContributionMap from "./ContributionMap.jsx";
 import TimerCircle from "./TimerCircle.jsx";
 import soundFocus from "./ding.mp3";
 import soundBreak from "./ding-break.mp3";
 
-// --- GOOGLE APP SCRIPT WEB APP URL ---
-const SYNC_API_URL = "https://script.google.com/macros/s/AKfycbxo5WFvIso1_7WbUREeQUGhueeb1GGCA84DpiJ75OT9JjUrl-1YkVdqYSmDME52j4g4/exec"; // <-- replace XXXX with your script ID
-console.log(SYNC_API_URL);
 const COLORS = {
   bg: "#161925",
   surface: "#23263a",
@@ -29,21 +27,26 @@ const COLORS = {
 const DEFAULT_DURATIONS = {
   focus: 25 * 60,
   break: 5 * 60,
-  longBreak: 15 * 60
+  longBreak: 15 * 60,
 };
 
 const MODES = [
   { key: "focus", label: "Focus", color: COLORS.focus },
   { key: "break", label: "Break", color: COLORS.break },
-  { key: "longBreak", label: "Long Break", color: COLORS.longBreak }
+  { key: "longBreak", label: "Long Break", color: COLORS.longBreak },
 ];
 
 function formatTime(sec) {
-  const m = Math.floor(sec / 60)
-    .toString()
-    .padStart(2, "0");
+  const m = Math.floor(sec / 60).toString().padStart(2, "0");
   const s = (sec % 60).toString().padStart(2, "0");
   return `${m}:${s}`;
+}
+
+function getTodayDhaka() {
+  const now = new Date();
+  const tzOffset = 6 * 60 * 60 * 1000;
+  const nowDhaka = new Date(now.getTime() + tzOffset);
+  return nowDhaka.toISOString().slice(0, 10);
 }
 
 function getNextMode(mode, focusCount) {
@@ -53,71 +56,22 @@ function getNextMode(mode, focusCount) {
   return "focus";
 }
 
-// ------ SYNC FUNCTIONS ------
-async function fetchSync(key) {
-  const url = `${SYNC_API_URL}?action=get&key=${encodeURIComponent(key)}`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) return null;
-  const txt = await res.text();
-  console.log('fetch: '+txt);
-  try {
-
-    return JSON.parse(txt);
-  } catch {
-    // fallback for plain string
-    return txt;
-  }
-}
-
-async function putSync(key, value) {
-  const body = new URLSearchParams({
-    action: "put",
-    key,
-    value: typeof value === "string" ? value : JSON.stringify(value)
-  });
-  return fetch(SYNC_API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body
-  });
-}
-// ----------------------------
-
 function App() {
-  // Tab state: "pomo" or "history"
   const [tab, setTab] = useState("pomo");
-
-  // Durations (adjustable, load from localStorage or default)
-  let storedDurations;
-  try {
-    storedDurations = JSON.parse(localStorage.getItem("pomo-durations"));
-  } catch { storedDurations = null; }
-  const [durations, setDurations] = useState(
-    storedDurations && typeof storedDurations === "object"
-      ? storedDurations
-      : { ...DEFAULT_DURATIONS }
-  );
-
-  // State
+  const [durations, setDurations] = useState({ ...DEFAULT_DURATIONS });
   const [mode, setMode] = useState("focus");
-  const [timeLeft, setTimeLeft] = useState(
-    (storedDurations && storedDurations.focus) ? storedDurations.focus : DEFAULT_DURATIONS.focus
-  );
+  const [timeLeft, setTimeLeft] = useState(DEFAULT_DURATIONS.focus);
   const [running, setRunning] = useState(false);
   const [focusCount, setFocusCount] = useState(1);
+  const [history, setHistory] = useState(() => {
+    const stored = localStorage.getItem("pomo-history");
+    return stored ? JSON.parse(stored) : {};
+  });
+  const [loading, setLoading] = useState(false);
 
-  // Load from localStorage
-  const [history, setHistory] = useState(() =>
-    JSON.parse(localStorage.getItem("pomo-history") || "{}")
-  );
   const timerRef = useRef();
   const audioFocusRef = useRef();
   const audioBreakRef = useRef();
-
-  // Save history on change
-  useEffect(() => {
-    localStorage.setItem("pomo-history", JSON.stringify(history));
-  }, [history]);
 
   useEffect(() => {
     document.title = `${formatTime(timeLeft)} - ${MODES.find(m => m.key === mode).label}`;
@@ -134,26 +88,26 @@ function App() {
       });
     }, 1000);
     return () => clearInterval(timerRef.current);
-    // eslint-disable-next-line
   }, [running]);
 
   function handleFinish() {
     if (mode === "break" || mode === "longBreak") {
-      audioBreakRef.current && audioBreakRef.current.play();
+      audioBreakRef.current?.play();
     } else {
-      audioFocusRef.current && audioFocusRef.current.play();
+      audioFocusRef.current?.play();
     }
-    let nextMode = getNextMode(mode, focusCount);
-    let nextFocusCount = mode === "focus" ? focusCount + 1 : focusCount;
-    // Save session to history
-    if (mode === "focus" || mode === "break" || mode === "longBreak") {
-      const today = new Date().toISOString().slice(0, 10);
-      setHistory(h => {
-        const prev = h[today] || 0;
-        const add = durations[mode] / 60;
-        return { ...h, [today]: prev + add };
-      });
-    }
+
+    const nextMode = getNextMode(mode, focusCount);
+    const nextFocusCount = mode === "focus" ? focusCount + 1 : focusCount;
+    const today = getTodayDhaka();
+    const add = Math.round(durations[mode] / 60);
+
+    setHistory(prev => {
+      const updated = { ...prev, [today]: (prev[today] || 0) + add };
+      localStorage.setItem("pomo-history", JSON.stringify(updated));
+      return updated;
+    });
+
     setTimeout(() => {
       setMode(nextMode);
       setTimeLeft(durations[nextMode]);
@@ -188,26 +142,19 @@ function App() {
     });
   }
 
-  // Always update durations if localStorage changes (for cross-tab sync)
   useEffect(() => {
-    const listener = () => {
-      try {
-        const newDur = JSON.parse(localStorage.getItem("pomo-durations"));
-        if (newDur && typeof newDur === "object") setDurations(newDur);
-      } catch {}
-    };
-    window.addEventListener("storage", listener);
-    return () => window.removeEventListener("storage", listener);
+    try {
+      const newDur = JSON.parse(localStorage.getItem("pomo-durations"));
+      if (newDur && typeof newDur === "object") setDurations(newDur);
+    } catch {}
   }, []);
 
-  // Responsive scaling for timer circle
   const [timerWidth, setTimerWidth] = useState(230);
   const timerRefDiv = useRef();
 
   useEffect(() => {
     function updateSize() {
       if (timerRefDiv.current) {
-        // 90vw, max 360px, min 180px
         const w = Math.max(180, Math.min(360, timerRefDiv.current.offsetWidth * 0.9));
         setTimerWidth(w);
       }
@@ -217,71 +164,10 @@ function App() {
     return () => window.removeEventListener("resize", updateSize);
   }, []);
 
-  // Premium gradient shadow for buttons
   const premiumShadow = "0 4px 24px 0 rgba(142,223,255,0.18), 0 2px 8px 0 rgba(36,48,94,0.18)";
-
-  // For TimerCircle
   const modeObj = MODES.find(m => m.key === mode);
   const total = durations[mode];
-  const percentGone = 1 - (timeLeft / total);
-
-  // --- SYNC LOGIC ---
-  // On mount, fetch remote values and merge into local if they exist (but don't overwrite local if already set)
-  useEffect(() => {
-    (async () => {
-      // Only sync if local is empty
-      //if (!localStorage.getItem("pomo-durations")) {
-        const durationsRemote = await fetchSync("pomo-durations");
-        if (durationsRemote && typeof durationsRemote === "object") {
-          setDurations(durationsRemote);
-          localStorage.setItem("pomo-durations", JSON.stringify(durationsRemote));
-        }
-      
-      //if (!localStorage.getItem("pomo-history")) {
-        const historyRemote = await fetchSync("pomo-history");
-        if (historyRemote && typeof historyRemote === "object") {
-          setHistory(historyRemote);
-          localStorage.setItem("pomo-history", JSON.stringify(historyRemote));
-        }
-      
-    })();
-  }, []);
-
-  // Whenever durations/history changes, update remote copy and localStorage
-  useEffect(() => {
-    console.log('putting'+JSON.stringify(durations))
-    putSync("pomo-durations", durations);
-  }, [durations]);
-  useEffect(() => {
-    console.log('putting'+JSON.stringify(history))
-    putSync("pomo-history", history);
-  }, [history]);
-
-  // Sync every 5 minutes (300000 ms): fetch remote and push local copy
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      // Pull remote, merge into local if different
-      const [remoteDur, remoteHist] = await Promise.all([
-        fetchSync("pomo-durations"),
-        fetchSync("pomo-history"),
-      ]);
-      if (remoteDur && JSON.stringify(remoteDur) !== JSON.stringify(durations)) {
-        setDurations(remoteDur);
-        localStorage.setItem("pomo-durations", JSON.stringify(remoteDur));
-      } else {
-        putSync("pomo-durations", durations);
-      }
-      if (remoteHist && JSON.stringify(remoteHist) !== JSON.stringify(history)) {
-        setHistory(remoteHist);
-        localStorage.setItem("pomo-history", JSON.stringify(remoteHist));
-      } else {
-        putSync("pomo-history", history);
-      }
-    }, 300000);
-    return () => clearInterval(interval);
-    // eslint-disable-next-line
-  }, [durations, history]);
-  // -------------------
+  const percentGone = 1 - timeLeft / total;
 
   return (
     <div style={{
@@ -369,7 +255,9 @@ function App() {
 
       {/* Main Content, add top padding to account for fixed bar height */}
       <div style={{ padding: "120px 28px 32px 28px" }}>
-        {tab === "pomo" && (
+        {loading ? (
+          <div style={{ textAlign: "center", marginTop: 40, color: COLORS.textSoft }}>Loading...</div>
+        ) : tab === "pomo" ? (
           <div ref={timerRefDiv}>
             <div style={{ display: "flex", gap: 12, marginBottom: 24, justifyContent: "center" }}>
               {MODES.map(m => (
@@ -518,8 +406,7 @@ function App() {
               </div>
             </div>
           </div>
-        )}
-        {tab === "history" && (
+        ) : (
           <div>
             <h3 style={{
               color: COLORS.accent,
