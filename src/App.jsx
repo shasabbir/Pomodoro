@@ -35,6 +35,31 @@ const MODES = [
   { key: "break", label: "Break", color: COLORS.break },
   { key: "longBreak", label: "Long Break", color: COLORS.longBreak },
 ];
+// --- API SYNC HELPERS ---
+const API_URL= "https://script.google.com/macros/s/AKfycbxRLznvfGO_bMX1sMymAbS96Mye-Qd2j7QiBf7CcOGK-tE1M7L7qN4iYXpDks02l-NqlA/exec";
+async function fetchFromAPI(key) {
+  const res = await fetch(`${API_URL}?action=${key}`);
+  const text = await res.text();
+  try {
+    console.log(text);
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+async function syncToAPI(action, key, value) {
+  const res = await fetch(`${API_URL}?action=${action}&key=${key}&value=${value}`);
+  const text = await res.text();
+  try {
+    console.log(text);
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+const STORAGE_KEY_DUR = "pomo-durations";
+const STORAGE_KEY_HIST = "pomo-history";
 
 function formatTime(sec) {
   const m = Math.floor(sec / 60).toString().padStart(2, "0");
@@ -103,10 +128,15 @@ function App() {
     const add = Math.round(durations[mode] / 60);
 
     setHistory(prev => {
-      const updated = { ...prev, [today]: (prev[today] || 0) + add };
-      localStorage.setItem("pomo-history", JSON.stringify(updated));
+      const prevVal = prev[today] || 0;
+      const newVal = prevVal + add;
+      const updated = { ...prev, [today]: newVal };
+      console.log("Updated history:", updated);
+      localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify(updated));
+      syncToAPI("incrementHistory", today,newVal).catch(console.error);
       return updated;
     });
+
 
     setTimeout(() => {
       setMode(nextMode);
@@ -132,32 +162,61 @@ function App() {
     if (newMode === "focus") setFocusCount(1);
   }
 
-  function handleDurationChange(type, val) {
-    let valSec = Math.max(1, Number(val)) * 60;
-    setDurations(d => {
-      const upd = { ...d, [type]: valSec };
-      if (mode === type) setTimeLeft(valSec);
-      localStorage.setItem("pomo-durations", JSON.stringify(upd));
-      return upd;
-    });
-  }
+function handleDurationChange(type, val) {
+  console.log(`Changing duration for ${type} to ${val} minutes`);
+  let valSec = Math.max(1, Number(val)) * 60;
+
+  setDurations(d => {
+    const upd = { ...d, [type]: valSec };
+    console.log("Updated durations:", upd);
+    if (mode === type) setTimeLeft(valSec);
+    localStorage.setItem(STORAGE_KEY_DUR, JSON.stringify(upd));
+    console.log("updateDuration"+ type+valSec);
+    syncToAPI("updateDuration", type,valSec).catch(console.error);  // Move here after upd is defined
+    return upd;
+  });
+}
 
   useEffect(() => {
-  try {
-    const storedDur = JSON.parse(localStorage.getItem("pomo-durations"));
-    if (storedDur && typeof storedDur === "object") {
-      setDurations(storedDur);
-      setTimeLeft(storedDur[mode] || DEFAULT_DURATIONS[mode]);
-    }
+    async function init() {
+      try {
+        // Load from localStorage first (fast fallback)
+        const localDur = JSON.parse(localStorage.getItem(STORAGE_KEY_DUR));
+        const localHist = JSON.parse(localStorage.getItem(STORAGE_KEY_HIST));
+        if (localDur && typeof localDur === "object") {
+          setDurations(localDur);
+          setTimeLeft(localDur[mode] || DEFAULT_DURATIONS[mode]);
+        }
+        if (localHist && typeof localHist === "object") {
+          setHistory(localHist);
+        }
 
-    const storedHist = JSON.parse(localStorage.getItem("pomo-history"));
-    if (storedHist && typeof storedHist === "object") {
-      setHistory(storedHist);
+        // Fetch latest from API and update
+        const [apiDur, apiHist] = await Promise.all([
+          fetchFromAPI("getAllDurations"),
+          fetchFromAPI("getHistory")
+        ]);
+
+        if (apiDur && typeof apiDur === "object") {
+          setDurations(apiDur);
+          setTimeLeft(apiDur[mode] || DEFAULT_DURATIONS[mode]);
+          localStorage.setItem(STORAGE_KEY_DUR, JSON.stringify(apiDur));
+        }
+        if (apiHist && typeof apiHist === "object") {
+          setHistory(apiHist);
+          localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify(apiHist));
+        }
+
+      } catch (err) {
+        console.error("Init error:", err);
+      } finally {
+        setLoading(false);
+      }
     }
-  } catch (e) {
-    console.error("Failed to load from localStorage:", e);
-  }
-}, []);
+    init();
+    // eslint-disable-next-line
+  }, []);
+
 
 
   const [timerWidth, setTimerWidth] = useState(230);
