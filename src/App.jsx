@@ -1,4 +1,3 @@
-// Removed all references to the deprecated sync API.
 import React, { useState, useRef, useEffect } from "react";
 import ContributionMap from "./ContributionMap.jsx";
 import TimerCircle from "./TimerCircle.jsx";
@@ -35,7 +34,7 @@ const MODES = [
   { key: "break", label: "Break", color: COLORS.break },
   { key: "longBreak", label: "Long Break", color: COLORS.longBreak },
 ];
-// --- API SYNC HELPERS ---
+
 const API_URL= "https://script.google.com/macros/s/AKfycbxRLznvfGO_bMX1sMymAbS96Mye-Qd2j7QiBf7CcOGK-tE1M7L7qN4iYXpDks02l-NqlA/exec";
 async function fetchFromAPI(key) {
   const res = await fetch(`${API_URL}?action=${key}`);
@@ -60,6 +59,7 @@ async function syncToAPI(action, key, value) {
 
 const STORAGE_KEY_DUR = "pomo-durations";
 const STORAGE_KEY_HIST = "pomo-history";
+const STORAGE_KEY_UI = "pomo-ui"; // NEW: For tab, mode, running, timeLeft, focusCount, lastTimeStamp
 
 function formatTime(sec) {
   const m = Math.floor(sec / 60).toString().padStart(2, "0");
@@ -81,27 +81,81 @@ function getNextMode(mode, focusCount) {
   return "focus";
 }
 
+// --- UI state helpers ---
+function saveUIState({ tab, mode, running, timeLeft, focusCount, lastTimeStamp }) {
+  localStorage.setItem(
+    STORAGE_KEY_UI,
+    JSON.stringify({ tab, mode, running, timeLeft, focusCount, lastTimeStamp })
+  );
+}
+function loadUIState() {
+  const stored = localStorage.getItem(STORAGE_KEY_UI);
+  if (stored) {
+    try {
+      return JSON.parse(stored);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+// --- MAIN COMPONENT ---
 function App() {
-  const [tab, setTab] = useState("pomo");
-  const [durations, setDurations] = useState({ ...DEFAULT_DURATIONS });
-  const [mode, setMode] = useState("focus");
-  const [timeLeft, setTimeLeft] = useState(DEFAULT_DURATIONS.focus);
-  const [running, setRunning] = useState(false);
-  const [focusCount, setFocusCount] = useState(1);
+  // --- Load persisted UI state or fallback ---
+  const ui = loadUIState();
+  const [tab, setTab] = useState(ui?.tab || "pomo");
+  const [mode, setMode] = useState(ui?.mode || "focus");
+  const [focusCount, setFocusCount] = useState(ui?.focusCount ?? 1);
+  const [durations, setDurations] = useState(() => {
+    const localDur = localStorage.getItem(STORAGE_KEY_DUR);
+    return localDur ? JSON.parse(localDur) : { ...DEFAULT_DURATIONS };
+  });
+  const [running, setRunning] = useState(ui?.running || false);
+  const [timeLeft, setTimeLeft] = useState(() => {
+    // Time calculation on reload
+    if (!ui) return DEFAULT_DURATIONS.focus;
+    if (!ui.lastTimeStamp) return ui.timeLeft ?? DEFAULT_DURATIONS.focus;
+    // If running, subtract elapsed time, else just return stored timeLeft
+    const now = Date.now();
+    if (ui.running) {
+      const elapsed = Math.floor((now - ui.lastTimeStamp) / 1000);
+      const t = Math.max(0, (ui.timeLeft ?? DEFAULT_DURATIONS[ui.mode || "focus"]) - elapsed);
+      return t;
+    }
+    return ui.timeLeft ?? DEFAULT_DURATIONS[ui.mode || "focus"];
+  });
+
   const [history, setHistory] = useState(() => {
     const stored = localStorage.getItem("pomo-history");
     return stored ? JSON.parse(stored) : {};
   });
+
   const [loading, setLoading] = useState(false);
 
   const timerRef = useRef();
   const audioFocusRef = useRef();
   const audioBreakRef = useRef();
 
+  // Persist UI state on every relevant change
+  useEffect(() => {
+    saveUIState({
+      tab,
+      mode,
+      running,
+      timeLeft,
+      focusCount,
+      lastTimeStamp: running ? Date.now() : null, // only update if running
+    });
+    // eslint-disable-next-line
+  }, [tab, mode, running, timeLeft, focusCount]);
+
+  // Update document title
   useEffect(() => {
     document.title = `${formatTime(timeLeft)} - ${MODES.find(m => m.key === mode).label}`;
   }, [timeLeft, mode]);
 
+  // Timer effect
   useEffect(() => {
     if (!running) return;
     timerRef.current = setInterval(() => {
@@ -113,46 +167,104 @@ function App() {
       });
     }, 1000);
     return () => clearInterval(timerRef.current);
+    // eslint-disable-next-line
   }, [running]);
 
-  function handleFinish() {
+  // On mount, resync if timer has already elapsed on reload
+  useEffect(() => {
+    const ui = loadUIState();
+    if (ui && ui.running && ui.lastTimeStamp && ui.timeLeft != null) {
+      const now = Date.now();
+      const elapsed = Math.floor((now - ui.lastTimeStamp) / 1000);
+      if (elapsed >= ui.timeLeft) {
+        // Timer should have finished, run handleFinish logic
+        handleFinish(true);
+      }
+    }
+    // Fetch durations/history from API after ui state ready, but always show local first
+    setLoading(true);
+    fetchFromAPI("getAllDurations").then(apiDur => {
+      if (apiDur && typeof apiDur === "object") {
+        setDurations(apiDur);
+        localStorage.setItem(STORAGE_KEY_DUR, JSON.stringify(apiDur));
+        if (mode in apiDur && timeLeft > apiDur[mode]) {
+          setTimeLeft(apiDur[mode]);
+        }
+      }
+    }).finally(() => setLoading(false));
+    fetchFromAPI("getHistory").then(apiHist => {
+      if (apiHist && typeof apiHist === "object") {
+        setHistory(apiHist);
+        localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify(apiHist));
+      }
+    });
+    // eslint-disable-next-line
+  }, []);
+
+  // Core logic for finishing a timer session
+  function handleFinish(isAuto = false) {
+    // isAuto = true means fired from refresh where timer elapsed
     if (mode === "break" || mode === "longBreak") {
       audioBreakRef.current?.play();
     } else {
       audioFocusRef.current?.play();
     }
-
     const nextMode = getNextMode(mode, focusCount);
     const nextFocusCount = mode === "focus" ? focusCount + 1 : focusCount;
     const today = getTodayDhaka();
     const add = Math.round(durations[mode] / 60);
 
     setHistory(prev => {
-      const prevVal = prev[today] || 0;
-      const newVal = prevVal + add;
+      
+      const newVal = add;
       const updated = { ...prev, [today]: newVal };
-      console.log("Updated history:", updated);
       localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify(updated));
-      syncToAPI("incrementHistory", today,newVal).catch(console.error);
+      syncToAPI("incrementHistory", today, newVal).catch(console.error);
       return updated;
     });
-
 
     setTimeout(() => {
       setMode(nextMode);
       setTimeLeft(durations[nextMode]);
       setFocusCount(nextFocusCount);
       setRunning(false);
-    }, 500);
+      saveUIState({
+        tab,
+        mode: nextMode,
+        running: false,
+        timeLeft: durations[nextMode],
+        focusCount: nextFocusCount,
+        lastTimeStamp: null,
+      });
+    }, isAuto ? 0 : 500);
   }
 
   function handleStartPause() {
-    setRunning(r => !r);
+    setRunning(r => {
+      // Save timestamp if starting, clear if pausing
+      saveUIState({
+        tab,
+        mode,
+        running: !r,
+        timeLeft,
+        focusCount,
+        lastTimeStamp: !r ? Date.now() : null,
+      });
+      return !r;
+    });
   }
 
   function handleReset() {
     setRunning(false);
     setTimeLeft(durations[mode]);
+    saveUIState({
+      tab,
+      mode,
+      running: false,
+      timeLeft: durations[mode],
+      focusCount,
+      lastTimeStamp: null,
+    });
   }
 
   function handleModeChange(newMode) {
@@ -160,68 +272,53 @@ function App() {
     setMode(newMode);
     setTimeLeft(durations[newMode]);
     if (newMode === "focus") setFocusCount(1);
+    saveUIState({
+      tab,
+      mode: newMode,
+      running: false,
+      timeLeft: durations[newMode],
+      focusCount: newMode === "focus" ? 1 : focusCount,
+      lastTimeStamp: null,
+    });
   }
 
-function handleDurationChange(type, val) {
-  console.log(`Changing duration for ${type} to ${val} minutes`);
-  let valSec = Math.max(1, Number(val)) * 60;
+  function handleTabChange(newTab) {
+    setTab(newTab);
+    saveUIState({
+      tab: newTab,
+      mode,
+      running,
+      timeLeft,
+      focusCount,
+      lastTimeStamp: running ? Date.now() : null,
+    });
+  }
 
-  setDurations(d => {
-    const upd = { ...d, [type]: valSec };
-    console.log("Updated durations:", upd);
-    if (mode === type) setTimeLeft(valSec);
-    localStorage.setItem(STORAGE_KEY_DUR, JSON.stringify(upd));
-    console.log("updateDuration"+ type+valSec);
-    syncToAPI("updateDuration", type,valSec).catch(console.error);  // Move here after upd is defined
-    return upd;
-  });
-}
-
-  useEffect(() => {
-    async function init() {
-      try {
-        // Load from localStorage first (fast fallback)
-        const localDur = JSON.parse(localStorage.getItem(STORAGE_KEY_DUR));
-        const localHist = JSON.parse(localStorage.getItem(STORAGE_KEY_HIST));
-        if (localDur && typeof localDur === "object") {
-          setDurations(localDur);
-          setTimeLeft(localDur[mode] || DEFAULT_DURATIONS[mode]);
-        }
-        if (localHist && typeof localHist === "object") {
-          setHistory(localHist);
-        }
-
-        // Fetch latest from API and update
-        const [apiDur, apiHist] = await Promise.all([
-          fetchFromAPI("getAllDurations"),
-          fetchFromAPI("getHistory")
-        ]);
-
-        if (apiDur && typeof apiDur === "object") {
-          setDurations(apiDur);
-          setTimeLeft(apiDur[mode] || DEFAULT_DURATIONS[mode]);
-          localStorage.setItem(STORAGE_KEY_DUR, JSON.stringify(apiDur));
-        }
-        if (apiHist && typeof apiHist === "object") {
-          setHistory(apiHist);
-          localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify(apiHist));
-        }
-
-      } catch (err) {
-        console.error("Init error:", err);
-      } finally {
-        setLoading(false);
-      }
+  function handleDurationChange(type, val) {
+    let valSec = Math.max(1, Number(val)) * 60;
+    setDurations(d => {
+      const upd = { ...d, [type]: valSec };
+      if (mode === type) setTimeLeft(valSec);
+      localStorage.setItem(STORAGE_KEY_DUR, JSON.stringify(upd));
+      syncToAPI("updateDuration", type, valSec).catch(console.error);
+      return upd;
+    });
+    // If changing current mode duration, update timeLeft and persist
+    if (mode === type) {
+      setTimeLeft(valSec);
+      saveUIState({
+        tab,
+        mode,
+        running,
+        timeLeft: valSec,
+        focusCount,
+        lastTimeStamp: running ? Date.now() : null,
+      });
     }
-    init();
-    // eslint-disable-next-line
-  }, []);
-
-
+  }
 
   const [timerWidth, setTimerWidth] = useState(230);
   const timerRefDiv = useRef();
-
   useEffect(() => {
     function updateSize() {
       if (timerRefDiv.current) {
@@ -287,7 +384,7 @@ function handleDurationChange(type, val) {
           }}
         >
           <button
-            onClick={() => setTab("pomo")}
+            onClick={() => handleTabChange("pomo")}
             style={{
               padding: "12px 32px",
               border: "none",
@@ -304,7 +401,7 @@ function handleDurationChange(type, val) {
             Pomodoro
           </button>
           <button
-            onClick={() => setTab("history")}
+            onClick={() => handleTabChange("history")}
             style={{
               padding: "12px 32px",
               border: "none",
@@ -325,9 +422,7 @@ function handleDurationChange(type, val) {
 
       {/* Main Content, add top padding to account for fixed bar height */}
       <div style={{ padding: "120px 28px 32px 28px" }}>
-        {loading ? (
-          <div style={{ textAlign: "center", marginTop: 40, color: COLORS.textSoft }}>Loading...</div>
-        ) : tab === "pomo" ? (
+        { tab === "pomo" ? (
           <div ref={timerRefDiv}>
             <div style={{ display: "flex", gap: 12, marginBottom: 24, justifyContent: "center" }}>
               {MODES.map(m => (
