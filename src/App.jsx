@@ -105,11 +105,13 @@ function App() {
         setTimeLeft(resp.timer.timeLeft);
       });
     } else {
+      // On resume, send timeLeft as remaining
       chrome.runtime?.sendMessage?.(
         {
           type: "START_TIMER",
           mode,
           duration: durations[mode],
+          remaining: timeLeft, // CRUCIAL for pause/resume!
           focusCount,
         },
         (resp) => {
