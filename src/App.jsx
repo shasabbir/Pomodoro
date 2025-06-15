@@ -1,4 +1,3 @@
-// Removed all references to the deprecated sync API.
 import React, { useState, useRef, useEffect } from "react";
 import ContributionMap from "./ContributionMap.jsx";
 import TimerCircle from "./TimerCircle.jsx";
@@ -35,50 +34,11 @@ const MODES = [
   { key: "break", label: "Break", color: COLORS.break },
   { key: "longBreak", label: "Long Break", color: COLORS.longBreak },
 ];
-// --- API SYNC HELPERS ---
-const API_URL= "https://script.google.com/macros/s/AKfycbxRLznvfGO_bMX1sMymAbS96Mye-Qd2j7QiBf7CcOGK-tE1M7L7qN4iYXpDks02l-NqlA/exec";
-async function fetchFromAPI(key) {
-  const res = await fetch(`${API_URL}?action=${key}`);
-  const text = await res.text();
-  try {
-    console.log(text);
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-async function syncToAPI(action, key, value) {
-  const res = await fetch(`${API_URL}?action=${action}&key=${key}&value=${value}`);
-  const text = await res.text();
-  try {
-    console.log(text);
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
-const STORAGE_KEY_DUR = "pomo-durations";
-const STORAGE_KEY_HIST = "pomo-history";
 
 function formatTime(sec) {
   const m = Math.floor(sec / 60).toString().padStart(2, "0");
   const s = (sec % 60).toString().padStart(2, "0");
   return `${m}:${s}`;
-}
-
-function getTodayDhaka() {
-  const now = new Date();
-  const tzOffset = 6 * 60 * 60 * 1000;
-  const nowDhaka = new Date(now.getTime() + tzOffset);
-  return nowDhaka.toISOString().slice(0, 10);
-}
-
-function getNextMode(mode, focusCount) {
-  if (mode === "focus") {
-    return focusCount % 4 === 0 ? "longBreak" : "break";
-  }
-  return "focus";
 }
 
 function App() {
@@ -88,140 +48,127 @@ function App() {
   const [timeLeft, setTimeLeft] = useState(DEFAULT_DURATIONS.focus);
   const [running, setRunning] = useState(false);
   const [focusCount, setFocusCount] = useState(1);
-  const [history, setHistory] = useState(() => {
-    const stored = localStorage.getItem("pomo-history");
-    return stored ? JSON.parse(stored) : {};
-  });
+  const [history, setHistory] = useState({});
   const [loading, setLoading] = useState(false);
 
-  const timerRef = useRef();
   const audioFocusRef = useRef();
   const audioBreakRef = useRef();
+
+  // On mount, sync with background timer state
+  useEffect(() => {
+    chrome.runtime?.sendMessage?.({ type: "GET_TIMER_STATE" }, (resp) => {
+      if (resp && resp.timer) {
+        setMode(resp.timer.mode);
+        setTimeLeft(resp.timer.timeLeft);
+        setRunning(resp.timer.running);
+        setFocusCount(resp.timer.focusCount || 1);
+      }
+    });
+
+    // Poll timer every second for live updates
+    const interval = setInterval(() => {
+      chrome.runtime?.sendMessage?.({ type: "GET_TIMER_STATE" }, (resp) => {
+        if (resp && resp.timer) {
+          setTimeLeft(resp.timer.timeLeft);
+          setRunning(resp.timer.running);
+          setMode(resp.timer.mode);
+          setFocusCount(resp.timer.focusCount || 1);
+        }
+      });
+    }, 1000);
+
+    // Optionally, load durations/history from chrome.storage.local
+    chrome.storage?.local?.get(["durations", "history"], (result) => {
+      if (result.durations) setDurations(result.durations);
+      if (result.history) setHistory(result.history);
+    });
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Save durations to chrome.storage.local
+  useEffect(() => {
+    chrome.storage?.local?.set({ durations });
+  }, [durations]);
+  useEffect(() => {
+    chrome.storage?.local?.set({ history });
+  }, [history]);
 
   useEffect(() => {
     document.title = `${formatTime(timeLeft)} - ${MODES.find(m => m.key === mode).label}`;
   }, [timeLeft, mode]);
 
-  useEffect(() => {
-    if (!running) return;
-    timerRef.current = setInterval(() => {
-      setTimeLeft(t => {
-        if (t > 1) return t - 1;
-        clearInterval(timerRef.current);
-        handleFinish();
-        return 0;
-      });
-    }, 1000);
-    return () => clearInterval(timerRef.current);
-  }, [running]);
-
-  function handleFinish() {
-    if (mode === "break" || mode === "longBreak") {
-      audioBreakRef.current?.play();
-    } else {
-      audioFocusRef.current?.play();
-    }
-
-    const nextMode = getNextMode(mode, focusCount);
-    const nextFocusCount = mode === "focus" ? focusCount + 1 : focusCount;
-    const today = getTodayDhaka();
-    const add = Math.round(durations[mode] / 60);
-
-    setHistory(prev => {
-      const prevVal = prev[today] || 0;
-      const newVal = prevVal + add;
-      const updated = { ...prev, [today]: newVal };
-      console.log("Updated history:", updated);
-      localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify(updated));
-      syncToAPI("incrementHistory", today,newVal).catch(console.error);
-      return updated;
-    });
-
-
-    setTimeout(() => {
-      setMode(nextMode);
-      setTimeLeft(durations[nextMode]);
-      setFocusCount(nextFocusCount);
-      setRunning(false);
-    }, 500);
-  }
-
   function handleStartPause() {
-    setRunning(r => !r);
+    if (running) {
+      chrome.runtime?.sendMessage?.({ type: "PAUSE_TIMER" }, (resp) => {
+        setRunning(false);
+        setTimeLeft(resp.timer.timeLeft);
+      });
+    } else {
+      chrome.runtime?.sendMessage?.(
+        {
+          type: "START_TIMER",
+          mode,
+          duration: durations[mode],
+          focusCount,
+        },
+        (resp) => {
+          setRunning(true);
+          setTimeLeft(resp.timer.timeLeft);
+        }
+      );
+    }
   }
 
   function handleReset() {
-    setRunning(false);
-    setTimeLeft(durations[mode]);
+    chrome.runtime?.sendMessage?.(
+      {
+        type: "RESET_TIMER",
+        mode,
+        duration: durations[mode],
+        focusCount: mode === "focus" ? 1 : focusCount,
+      },
+      (resp) => {
+        setRunning(false);
+        setTimeLeft(resp.timer.timeLeft);
+      }
+    );
   }
 
   function handleModeChange(newMode) {
-    setRunning(false);
     setMode(newMode);
-    setTimeLeft(durations[newMode]);
-    if (newMode === "focus") setFocusCount(1);
+    setFocusCount(newMode === "focus" ? 1 : focusCount);
+    chrome.runtime?.sendMessage?.(
+      {
+        type: "RESET_TIMER",
+        mode: newMode,
+        duration: durations[newMode],
+        focusCount: newMode === "focus" ? 1 : focusCount,
+      },
+      (resp) => {
+        setRunning(false);
+        setTimeLeft(resp.timer.timeLeft);
+      }
+    );
   }
 
-function handleDurationChange(type, val) {
-  console.log(`Changing duration for ${type} to ${val} minutes`);
-  let valSec = Math.max(1, Number(val)) * 60;
-
-  setDurations(d => {
-    const upd = { ...d, [type]: valSec };
-    console.log("Updated durations:", upd);
-    if (mode === type) setTimeLeft(valSec);
-    localStorage.setItem(STORAGE_KEY_DUR, JSON.stringify(upd));
-    console.log("updateDuration"+ type+valSec);
-    syncToAPI("updateDuration", type,valSec).catch(console.error);  // Move here after upd is defined
-    return upd;
-  });
-}
-
-  useEffect(() => {
-    async function init() {
-      try {
-        // Load from localStorage first (fast fallback)
-        const localDur = JSON.parse(localStorage.getItem(STORAGE_KEY_DUR));
-        const localHist = JSON.parse(localStorage.getItem(STORAGE_KEY_HIST));
-        if (localDur && typeof localDur === "object") {
-          setDurations(localDur);
-          setTimeLeft(localDur[mode] || DEFAULT_DURATIONS[mode]);
+  function handleDurationChange(type, val) {
+    let valSec = Math.max(1, Number(val)) * 60;
+    setDurations((d) => ({ ...d, [type]: valSec }));
+    if (mode === type) {
+      chrome.runtime?.sendMessage?.(
+        { type: "RESET_TIMER", mode, duration: valSec, focusCount },
+        (resp) => {
+          setRunning(false);
+          setTimeLeft(resp.timer.timeLeft);
         }
-        if (localHist && typeof localHist === "object") {
-          setHistory(localHist);
-        }
-
-        // Fetch latest from API and update
-        const [apiDur, apiHist] = await Promise.all([
-          fetchFromAPI("getAllDurations"),
-          fetchFromAPI("getHistory")
-        ]);
-
-        if (apiDur && typeof apiDur === "object") {
-          setDurations(apiDur);
-          setTimeLeft(apiDur[mode] || DEFAULT_DURATIONS[mode]);
-          localStorage.setItem(STORAGE_KEY_DUR, JSON.stringify(apiDur));
-        }
-        if (apiHist && typeof apiHist === "object") {
-          setHistory(apiHist);
-          localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify(apiHist));
-        }
-
-      } catch (err) {
-        console.error("Init error:", err);
-      } finally {
-        setLoading(false);
-      }
+      );
     }
-    init();
-    // eslint-disable-next-line
-  }, []);
+  }
 
-
-
+  // Timer size responsive
   const [timerWidth, setTimerWidth] = useState(230);
   const timerRefDiv = useRef();
-
   useEffect(() => {
     function updateSize() {
       if (timerRefDiv.current) {
@@ -234,22 +181,25 @@ function handleDurationChange(type, val) {
     return () => window.removeEventListener("resize", updateSize);
   }, []);
 
-  const premiumShadow = "0 4px 24px 0 rgba(142,223,255,0.18), 0 2px 8px 0 rgba(36,48,94,0.18)";
-  const modeObj = MODES.find(m => m.key === mode);
+  const premiumShadow =
+    "0 4px 24px 0 rgba(142,223,255,0.18), 0 2px 8px 0 rgba(36,48,94,0.18)";
+  const modeObj = MODES.find((m) => m.key === mode);
   const total = durations[mode];
   const percentGone = 1 - timeLeft / total;
 
   return (
-    <div style={{
-      fontFamily: "Inter,system-ui,sans-serif",
-      maxWidth: 480,
-      minHeight: "100vh",
-      margin: "0 auto",
-      background: COLORS.bg,
-      color: COLORS.text,
-      padding: 0,
-      overflow: "hidden"
-    }}>
+    <div
+      style={{
+        fontFamily: "Inter,system-ui,sans-serif",
+        maxWidth: 480,
+        minHeight: "100vh",
+        margin: "0 auto",
+        background: COLORS.bg,
+        color: COLORS.text,
+        padding: 0,
+        overflow: "hidden",
+      }}
+    >
       {/* Fixed Top Bar */}
       <div
         style={{
@@ -262,19 +212,23 @@ function handleDurationChange(type, val) {
           zIndex: 100,
           boxShadow: COLORS.shadow,
           borderBottom: `2px solid ${COLORS.border}`,
-          margin: "0 auto"
+          margin: "0 auto",
         }}
       >
-        <h1 style={{
-          margin: 0,
-          padding: "22px 32px 10px 32px",
-          fontSize: 28,
-          letterSpacing: "-1px",
-          fontWeight: 800,
-          background: `linear-gradient(90deg, ${COLORS.accentSoft} 0%, ${COLORS.focus} 100%)`,
-          WebkitBackgroundClip: "text",
-          WebkitTextFillColor: "transparent"
-        }}>Pomodoro</h1>
+        <h1
+          style={{
+            margin: 0,
+            padding: "22px 32px 10px 32px",
+            fontSize: 28,
+            letterSpacing: "-1px",
+            fontWeight: 800,
+            background: `linear-gradient(90deg, ${COLORS.accentSoft} 0%, ${COLORS.focus} 100%)`,
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+          }}
+        >
+          Pomodoro
+        </h1>
         {/* Main Tabs */}
         <div
           style={{
@@ -283,7 +237,7 @@ function handleDurationChange(type, val) {
             marginBottom: 0,
             borderBottom: `2px solid ${COLORS.border}`,
             paddingLeft: 32,
-            background: COLORS.surface
+            background: COLORS.surface,
           }}
         >
           <button
@@ -298,7 +252,7 @@ function handleDurationChange(type, val) {
               borderRadius: "12px 12px 0 0",
               cursor: "pointer",
               boxShadow: tab === "pomo" ? premiumShadow : "none",
-              transition: "all 0.18s"
+              transition: "all 0.18s",
             }}
           >
             Pomodoro
@@ -315,7 +269,7 @@ function handleDurationChange(type, val) {
               borderRadius: "12px 12px 0 0",
               cursor: "pointer",
               boxShadow: tab === "history" ? premiumShadow : "none",
-              transition: "all 0.18s"
+              transition: "all 0.18s",
             }}
           >
             History
@@ -326,11 +280,20 @@ function handleDurationChange(type, val) {
       {/* Main Content, add top padding to account for fixed bar height */}
       <div style={{ padding: "120px 28px 32px 28px" }}>
         {loading ? (
-          <div style={{ textAlign: "center", marginTop: 40, color: COLORS.textSoft }}>Loading...</div>
+          <div style={{ textAlign: "center", marginTop: 40, color: COLORS.textSoft }}>
+            Loading...
+          </div>
         ) : tab === "pomo" ? (
           <div ref={timerRefDiv}>
-            <div style={{ display: "flex", gap: 12, marginBottom: 24, justifyContent: "center" }}>
-              {MODES.map(m => (
+            <div
+              style={{
+                display: "flex",
+                gap: 12,
+                marginBottom: 24,
+                justifyContent: "center",
+              }}
+            >
+              {MODES.map((m) => (
                 <button
                   key={m.key}
                   style={{
@@ -344,7 +307,7 @@ function handleDurationChange(type, val) {
                     fontSize: 17,
                     letterSpacing: 1,
                     boxShadow: mode === m.key ? premiumShadow : "none",
-                    transition: "all 0.15s"
+                    transition: "all 0.15s",
                   }}
                   onClick={() => handleModeChange(m.key)}
                 >
@@ -353,7 +316,14 @@ function handleDurationChange(type, val) {
               ))}
             </div>
             {/* Timer with Circle */}
-            <div style={{ display: "flex", justifyContent: "center", margin: "5px 0 10px 0", width: "100%" }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "center",
+                margin: "5px 0 10px 0",
+                width: "100%",
+              }}
+            >
               <TimerCircle
                 size={timerWidth}
                 stroke={Math.max(10, timerWidth * 0.08)}
@@ -361,17 +331,26 @@ function handleDurationChange(type, val) {
                 mainColor={modeObj.color}
                 bgColor={COLORS.bg}
               >
-                <div style={{
-                  fontSize: Math.max(36, timerWidth * 0.24),
-                  fontWeight: 900,
-                  color: modeObj.color,
-                  textShadow: "0 6px 24px rgba(142,223,255,0.16)"
-                }}>
+                <div
+                  style={{
+                    fontSize: Math.max(36, timerWidth * 0.24),
+                    fontWeight: 900,
+                    color: modeObj.color,
+                    textShadow: "0 6px 24px rgba(142,223,255,0.16)",
+                  }}
+                >
                   {formatTime(timeLeft)}
                 </div>
               </TimerCircle>
             </div>
-            <div style={{ display: "flex", justifyContent: "center", gap: 16, marginBottom: 14 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "center",
+                gap: 16,
+                marginBottom: 14,
+              }}
+            >
               <button
                 onClick={handleStartPause}
                 style={{
@@ -384,7 +363,7 @@ function handleDurationChange(type, val) {
                   fontSize: 19,
                   boxShadow: premiumShadow,
                   cursor: "pointer",
-                  transition: "background 0.18s"
+                  transition: "background 0.18s",
                 }}
               >
                 {running ? "Pause" : "Start"}
@@ -401,53 +380,68 @@ function handleDurationChange(type, val) {
                   fontSize: 17,
                   boxShadow: "none",
                   cursor: "pointer",
-                  transition: "background 0.18s"
+                  transition: "background 0.18s",
                 }}
               >
                 Reset
               </button>
             </div>
-            <div style={{
-              margin: "16px 0 32px 0",
-              color: COLORS.textSoft,
-              fontWeight: 500,
-              textAlign: "center"
-            }}>
-              <span style={{
-                background: COLORS.surface,
-                borderRadius: 6,
-                padding: "6px 16px",
-                display: "inline-block",
-                fontWeight: 800,
+            <div
+              style={{
+                margin: "16px 0 32px 0",
                 color: COLORS.textSoft,
-                letterSpacing: 0.7
-              }}>
-                Session: <span style={{
-                  color: COLORS.accent,
-                  fontWeight: 900
-                }}>{mode === "focus" ? focusCount : "-"}</span>
+                fontWeight: 500,
+                textAlign: "center",
+              }}
+            >
+              <span
+                style={{
+                  background: COLORS.surface,
+                  borderRadius: 6,
+                  padding: "6px 16px",
+                  display: "inline-block",
+                  fontWeight: 800,
+                  color: COLORS.textSoft,
+                  letterSpacing: 0.7,
+                }}
+              >
+                Session:{" "}
+                <span
+                  style={{
+                    color: COLORS.accent,
+                    fontWeight: 900,
+                  }}
+                >
+                  {mode === "focus" ? focusCount : "-"}
+                </span>
               </span>
             </div>
             {/* Audio for focus and break */}
             <audio ref={audioFocusRef} src={soundFocus} preload="auto" />
             <audio ref={audioBreakRef} src={soundBreak} preload="auto" />
-            <div style={{
-              margin: "28px 0 0 0",
-              background: COLORS.surface,
-              borderRadius: 16,
-              padding: "22px 18px 12px 18px",
-              boxShadow: COLORS.shadow,
-              border: `1.5px solid ${COLORS.border}`
-            }}>
-              <h3 style={{
-                color: COLORS.accent,
-                margin: "0 0 12px 0",
-                fontWeight: 700,
-                fontSize: 16,
-                letterSpacing: 1
-              }}>Durations (min)</h3>
+            <div
+              style={{
+                margin: "28px 0 0 0",
+                background: COLORS.surface,
+                borderRadius: 16,
+                padding: "22px 18px 12px 18px",
+                boxShadow: COLORS.shadow,
+                border: `1.5px solid ${COLORS.border}`,
+              }}
+            >
+              <h3
+                style={{
+                  color: COLORS.accent,
+                  margin: "0 0 12px 0",
+                  fontWeight: 700,
+                  fontSize: 16,
+                  letterSpacing: 1,
+                }}
+              >
+                Durations (min)
+              </h3>
               <div style={{ display: "flex", gap: 24, justifyContent: "center" }}>
-                {MODES.map(m => (
+                {MODES.map((m) => (
                   <div key={m.key} style={{ textAlign: "center" }}>
                     <label style={{ fontWeight: 600, color: m.color }}>
                       {m.label}
@@ -455,7 +449,7 @@ function handleDurationChange(type, val) {
                         type="number"
                         min={1}
                         value={Math.round(durations[m.key] / 60)}
-                        onChange={e => handleDurationChange(m.key, e.target.value)}
+                        onChange={(e) => handleDurationChange(m.key, e.target.value)}
                         style={{
                           width: 48,
                           marginLeft: 8,
@@ -467,7 +461,7 @@ function handleDurationChange(type, val) {
                           fontWeight: 700,
                           fontSize: 16,
                           boxShadow: "none",
-                          outline: "none"
+                          outline: "none",
                         }}
                       />
                     </label>
@@ -478,22 +472,26 @@ function handleDurationChange(type, val) {
           </div>
         ) : (
           <div>
-            <h3 style={{
-              color: COLORS.accent,
-              margin: "0 0 22px 0",
-              fontWeight: 700,
-              fontSize: 18,
-              letterSpacing: 1
-            }}>
+            <h3
+              style={{
+                color: COLORS.accent,
+                margin: "0 0 22px 0",
+                fontWeight: 700,
+                fontSize: 18,
+                letterSpacing: 1,
+              }}
+            >
               Last 6 Months Contribution Map
             </h3>
-            <div style={{
-              width: "100%",
-              maxWidth: "100%",
-              overflowX: "auto",
-              boxSizing: "border-box",
-              paddingBottom: 12
-            }}>
+            <div
+              style={{
+                width: "100%",
+                maxWidth: "100%",
+                overflowX: "auto",
+                boxSizing: "border-box",
+                paddingBottom: 12,
+              }}
+            >
               <div style={{ width: "fit-content", minWidth: "100%" }}>
                 <ContributionMap history={history} premiumColors={COLORS} />
               </div>
