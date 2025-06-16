@@ -4,30 +4,30 @@ import TimerCircle from "./TimerCircle.jsx";
 import soundFocus from "./ding.mp3";
 import soundBreak from "./ding-break.mp3";
 
+// --- API SYNC HELPERS ---
+const API_URL = "https://script.google.com/macros/s/AKfycbxRLznvfGO_bMX1sMymAbS96Mye-Qd2j7QiBf7CcOGK-tE1M7L7qN4iYXpDks02l-NqlA/exec";
+async function fetchFromAPI(key) {
+  const res = await fetch(`${API_URL}?action=${key}`);
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return null; }
+}
+async function syncToAPI(action, key, value) {
+  const res = await fetch(`${API_URL}?action=${action}&key=${key}&value=${value}`);
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return null; }
+}
+
 const COLORS = {
-  bg: "#161925",
-  surface: "#23263a",
-  accent: "#8edfff",
-  accentSoft: "#aee7ff",
-  accentFade: "#e4f7ff",
-  focus: "#4adc89",
-  break: "#ffd66e",
-  longBreak: "#ff7cb9",
-  text: "#e0e6f0",
-  textSoft: "#a7b2cc",
-  border: "#2e3147",
-  shadow: "0 4px 16px 0 rgba(54,90,255,0.08)",
-  button: "#24305e",
-  buttonActive: "#8edfff",
-  tabActive: "#2c3254",
-  danger: "#ff4b5c",
+  bg: "#161925", surface: "#23263a", accent: "#8edfff", accentSoft: "#aee7ff", accentFade: "#e4f7ff",
+  focus: "#4adc89", break: "#ffd66e", longBreak: "#ff7cb9", text: "#e0e6f0", textSoft: "#a7b2cc",
+  border: "#2e3147", shadow: "0 4px 16px 0 rgba(54,90,255,0.08)", button: "#24305e",
+  buttonActive: "#8edfff", tabActive: "#2c3254", danger: "#ff4b5c",
 };
 
-const DEFAULT_DURATIONS = {
-  focus: 25 * 60,
-  break: 5 * 60,
-  longBreak: 15 * 60,
-};
+const DEFAULT_DURATIONS = { focus: 25 * 60, break: 5 * 60, longBreak: 15 * 60 };
+const STORAGE_KEY_DUR = "pomodoro_durations";
+const STORAGE_KEY_HIST = "pomodoro_history";
+const STORAGE_KEY_UI = "pomodoro_ui";
 
 const MODES = [
   { key: "focus", label: "Focus", color: COLORS.focus },
@@ -40,21 +40,36 @@ function formatTime(sec) {
   const s = (sec % 60).toString().padStart(2, "0");
   return `${m}:${s}`;
 }
+function loadUIState() {
+  try { const raw = localStorage.getItem(STORAGE_KEY_UI); return raw ? JSON.parse(raw) : null; } catch { return null; }
+}
+function saveUIState(state) {
+  localStorage.setItem(STORAGE_KEY_UI, JSON.stringify(state));
+}
+function getTodayString() {
+  return new Date().toISOString().slice(0, 10);
+}
 
 function App() {
   const [tab, setTab] = useState("pomo");
-  const [durations, setDurations] = useState({ ...DEFAULT_DURATIONS });
+  const [durations, setDurations] = useState(() => {
+    try { const raw = localStorage.getItem(STORAGE_KEY_DUR); return raw ? JSON.parse(raw) : { ...DEFAULT_DURATIONS }; }
+    catch { return { ...DEFAULT_DURATIONS }; }
+  });
   const [mode, setMode] = useState("focus");
   const [timeLeft, setTimeLeft] = useState(DEFAULT_DURATIONS.focus);
   const [running, setRunning] = useState(false);
   const [focusCount, setFocusCount] = useState(1);
-  const [history, setHistory] = useState({});
-  const [loading, setLoading] = useState(false);
+  const [history, setHistory] = useState(() => {
+    try { const raw = localStorage.getItem(STORAGE_KEY_HIST); return raw ? JSON.parse(raw) : {}; }
+    catch { return {}; }
+  });
 
   const audioFocusRef = useRef();
   const audioBreakRef = useRef();
+  const finishedRef = useRef(false); // Prevents double-finish
 
-  // On mount, sync with background timer state
+  // Sync with background timer
   useEffect(() => {
     chrome.runtime?.sendMessage?.({ type: "GET_TIMER_STATE" }, (resp) => {
       if (resp && resp.timer) {
@@ -64,8 +79,6 @@ function App() {
         setFocusCount(resp.timer.focusCount || 1);
       }
     });
-
-    // Poll timer every second for live updates
     const interval = setInterval(() => {
       chrome.runtime?.sendMessage?.({ type: "GET_TIMER_STATE" }, (resp) => {
         if (resp && resp.timer) {
@@ -76,27 +89,56 @@ function App() {
         }
       });
     }, 1000);
-
-    // Optionally, load durations/history from chrome.storage.local
-    chrome.storage?.local?.get(["durations", "history"], (result) => {
-      if (result.durations) setDurations(result.durations);
-      if (result.history) setHistory(result.history);
-    });
-
     return () => clearInterval(interval);
   }, []);
 
-  // Save durations to chrome.storage.local
+  // API sync (no loading state, always show local instantly)
   useEffect(() => {
-    chrome.storage?.local?.set({ durations });
-  }, [durations]);
-  useEffect(() => {
-    chrome.storage?.local?.set({ history });
-  }, [history]);
+    fetchFromAPI("getAllDurations").then(apiDur => {
+      if (apiDur && typeof apiDur === "object") {
+        setDurations(apiDur);
+        localStorage.setItem(STORAGE_KEY_DUR, JSON.stringify(apiDur));
+        if (mode in apiDur && timeLeft > apiDur[mode]) {
+          setTimeLeft(apiDur[mode]);
+        }
+      }
+    });
+    fetchFromAPI("getHistory").then(apiHist => {
+      if (apiHist && typeof apiHist === "object") {
+        setHistory(apiHist);
+        localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify(apiHist));
+      }
+    });
+    // eslint-disable-next-line
+  }, []);
 
+  useEffect(() => { localStorage.setItem(STORAGE_KEY_DUR, JSON.stringify(durations)); }, [durations]);
+  useEffect(() => { localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify(history)); }, [history]);
+  useEffect(() => {
+    saveUIState({
+      running,
+      lastTimeStamp: running ? Date.now() : null,
+      timeLeft,
+      mode,
+      focusCount
+    });
+  }, [running, timeLeft, mode, focusCount]);
   useEffect(() => {
     document.title = `${formatTime(timeLeft)} - ${MODES.find(m => m.key === mode).label}`;
   }, [timeLeft, mode]);
+
+  // Timer finish handler: react to timer hitting 0 and not running
+  useEffect(() => {
+    if (timeLeft === 0 && !running && !finishedRef.current) {
+      finishedRef.current = true;
+      handleFinish();
+      handleReset(); // auto-reset after finish
+    }
+    if (timeLeft > 0 || running) {
+      finishedRef.current = false;
+    }
+    // eslint-disable-next-line
+  }, [timeLeft, running]);
 
   function handleStartPause() {
     if (running) {
@@ -105,13 +147,12 @@ function App() {
         setTimeLeft(resp.timer.timeLeft);
       });
     } else {
-      // On resume, send timeLeft as remaining
       chrome.runtime?.sendMessage?.(
         {
           type: "START_TIMER",
           mode,
           duration: durations[mode],
-          remaining: timeLeft, // CRUCIAL for pause/resume!
+          remaining: timeLeft,
           focusCount,
         },
         (resp) => {
@@ -121,7 +162,6 @@ function App() {
       );
     }
   }
-
   function handleReset() {
     chrome.runtime?.sendMessage?.(
       {
@@ -136,7 +176,6 @@ function App() {
       }
     );
   }
-
   function handleModeChange(newMode) {
     setMode(newMode);
     setFocusCount(newMode === "focus" ? 1 : focusCount);
@@ -153,10 +192,13 @@ function App() {
       }
     );
   }
-
   function handleDurationChange(type, val) {
     let valSec = Math.max(1, Number(val)) * 60;
-    setDurations((d) => ({ ...d, [type]: valSec }));
+    setDurations((d) => {
+      const newDurations = { ...d, [type]: valSec };
+      syncToAPI("updateDuration", type, valSec).catch(console.error);
+      return newDurations;
+    });
     if (mode === type) {
       chrome.runtime?.sendMessage?.(
         { type: "RESET_TIMER", mode, duration: valSec, focusCount },
@@ -165,6 +207,19 @@ function App() {
           setTimeLeft(resp.timer.timeLeft);
         }
       );
+    }
+  }
+  function handleFinish() {
+    // Play sound
+    if (mode === "focus" && audioFocusRef.current) audioFocusRef.current.play();
+    if (mode !== "focus" && audioBreakRef.current) audioBreakRef.current.play();
+    // Update history (only for focus sessions)
+    if (mode === "focus") {
+      let today = getTodayString();
+      let newVal = (history[today] || 0) + (durations.focus / 60);
+      let newHistory = { ...history, [today]: newVal };
+      setHistory(newHistory);
+      syncToAPI("incrementHistory", today, newVal).catch(console.error);
     }
   }
 
@@ -281,11 +336,7 @@ function App() {
 
       {/* Main Content, add top padding to account for fixed bar height */}
       <div style={{ padding: "120px 28px 32px 28px" }}>
-        {loading ? (
-          <div style={{ textAlign: "center", marginTop: 40, color: COLORS.textSoft }}>
-            Loading...
-          </div>
-        ) : tab === "pomo" ? (
+        {tab === "pomo" ? (
           <div ref={timerRefDiv}>
             <div
               style={{
