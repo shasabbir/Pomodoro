@@ -35,7 +35,7 @@ const MODES = [
   { key: "longBreak", label: "Long Break", color: COLORS.longBreak },
 ];
 
-const API_URL= "https://script.google.com/macros/s/AKfycbxRLznvfGO_bMX1sMymAbS96Mye-Qd2j7QiBf7CcOGK-tE1M7L7qN4iYXpDks02l-NqlA/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbxRLznvfGO_bMX1sMymAbS96Mye-Qd2j7QiBf7CcOGK-tE1M7L7qN4iYXpDks02l-NqlA/exec";
 async function fetchFromAPI(key) {
   const res = await fetch(`${API_URL}?action=${key}`);
   const text = await res.text();
@@ -169,11 +169,11 @@ function App() {
     return () => clearInterval(timerRef.current);
     // eslint-disable-next-line
   }, [running]);
-useEffect(() => {
-  if (Notification && Notification.permission === "default") {
-    Notification.requestPermission();
-  }
-}, []);
+  useEffect(() => {
+    if (Notification && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
   // On mount, resync if timer has already elapsed on reload
   useEffect(() => {
     const ui = loadUIState();
@@ -214,27 +214,30 @@ useEffect(() => {
       audioFocusRef.current?.play();
     }
     // === NEW: Show notification ===
-  if (Notification && Notification.permission === "granted") {
-    let notifTitle = mode === "focus" ? "Focus session complete!" : "Break time's up!";
-    let notifBody = mode === "focus"
-      ? "Time for a break or a long break."
-      : "Time to get back to focus!";
-    new Notification(notifTitle, { body: notifBody });
-  }
-  // === END NEW ===
+    if (Notification && Notification.permission === "granted") {
+      let notifTitle = mode === "focus" ? "Focus session complete!" : "Break time's up!";
+      let notifBody = mode === "focus"
+        ? "Time for a break or a long break."
+        : "Time to get back to focus!";
+      new Notification(notifTitle, { body: notifBody });
+    }
+    // === END NEW ===
     const nextMode = getNextMode(mode, focusCount);
     const nextFocusCount = mode === "focus" ? focusCount + 1 : focusCount;
     const today = getTodayDhaka();
     const add = Math.round(durations[mode] / 60);
 
-    setHistory(prev => {
-      
-      const newVal = add;
-      const updated = { ...prev, [today]: newVal };
-      localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify(updated));
-      syncToAPI("incrementHistory", today, newVal).catch(console.error);
-      return updated;
-    });
+    //set history only if focus session
+    if (mode === "focus") {
+      setHistory(prev => {
+
+        const newVal = add;
+        const updated = { ...prev, [today]: newVal };
+        localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify(updated));
+        syncToAPI("incrementHistory", today, newVal).catch(console.error);
+        return updated;
+      });
+    }
 
     setTimeout(() => {
       setMode(nextMode);
@@ -435,7 +438,7 @@ useEffect(() => {
 
       {/* Main Content, add top padding to account for fixed bar height */}
       <div style={{ padding: "120px 28px 32px 28px" }}>
-        { tab === "pomo" ? (
+        {tab === "pomo" ? (
           <div ref={timerRefDiv}>
             <div style={{ display: "flex", gap: 12, marginBottom: 24, justifyContent: "center" }}>
               {MODES.map(m => (
