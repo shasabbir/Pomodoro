@@ -169,7 +169,11 @@ function App() {
     return () => clearInterval(timerRef.current);
     // eslint-disable-next-line
   }, [running]);
-
+useEffect(() => {
+  if (Notification && Notification.permission === "default") {
+    Notification.requestPermission();
+  }
+}, []);
   // On mount, resync if timer has already elapsed on reload
   useEffect(() => {
     const ui = loadUIState();
@@ -209,6 +213,15 @@ function App() {
     } else {
       audioFocusRef.current?.play();
     }
+    // === NEW: Show notification ===
+  if (Notification && Notification.permission === "granted") {
+    let notifTitle = mode === "focus" ? "Focus session complete!" : "Break time's up!";
+    let notifBody = mode === "focus"
+      ? "Time for a break or a long break."
+      : "Time to get back to focus!";
+    new Notification(notifTitle, { body: notifBody });
+  }
+  // === END NEW ===
     const nextMode = getNextMode(mode, focusCount);
     const nextFocusCount = mode === "focus" ? focusCount + 1 : focusCount;
     const today = getTodayDhaka();
